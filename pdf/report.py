@@ -232,7 +232,7 @@ def generate_report(result, chart_figs: dict | None = None) -> bytes:
     )
 
     # ── Batteriesimulation ────────────────────────────────────────────────────
-    pdf.h2(f'Batterie-Simulation ({r.config.efficiency*100:.0f}% Wirkungsgrad)')
+    pdf.h2(f'Batterie-Simulation ({r.config.efficiency*100:.0f}% RT, {r.config.standby_watts:.0f}W Standby)')
     rows = []
     for br in r.battery_results:
         amort_str = f'{br.amort_years:.1f} J' if br.amort_years < 99 else '>30 J'
@@ -242,15 +242,15 @@ def generate_report(result, chart_figs: dict | None = None) -> bytes:
         rows.append([
             f'{prefix}{br.capacity:.0f} kWh{suffix}',
             f'{prefix}{br.saved_kwh:.0f} kWh{suffix}',
-            f'{prefix}{br.reduction_pct:.1f}%{suffix}',
+            f'-{br.standby_loss_kwh:.0f}',
             f'{prefix}CHF {br.chf_per_year:.0f}{suffix}',
             f'{prefix}CHF {br.invest_chf:.0f}{suffix}',
             f'{prefix}{amort_str}{suffix}',
         ])
     pdf.table(
-        ['Kap.', 'Gespart/J', 'Reduktion', 'CHF/J', 'Invest netto*', 'Amort.'],
+        ['Kap.', 'Netto/J', 'Standby', 'CHF/J', 'Invest*', 'Amort.'],
         rows,
-        col_widths=[22, 30, 24, 28, 34, 32],
+        col_widths=[22, 26, 20, 28, 30, 44],
         small=True,
     )
     pdf.body('* Netto nach Steuerabzug ~30% (Kanton LU / CH)', size=8.5)

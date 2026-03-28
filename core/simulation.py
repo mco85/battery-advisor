@@ -1,42 +1,77 @@
 """
 Kern-Simulation: Battery-Modell, Tagesgang, Monatsprofil.
-Direkt portiert aus analyse_15min.py.
+
+Physik-Modell:
+- Split-Effizienz: Lade-Verlust (sqrt(eff)) + Entlade-Verlust (sqrt(eff))
+- Standby-Verbrauch: Dauerlast Inverter/BMS, wird aus SOC oder Netz gedeckt
+- Mindestleistung: Unter Threshold keine Aktivierung
 """
 from __future__ import annotations
 import pandas as pd
 import numpy as np
 from .economics import (
-    UserConfig, AnalysisResult, MonthStats, BatteryResult,
+    UserConfig, AnalysisResult, MonthStats,
     compute_economics, recommend_battery
 )
 
+SLOT_HOURS = 0.25  # 15-Min-Slot = 0.25 Stunden
 
-def sim_battery(df: pd.DataFrame, cap_kwh: float, eff: float = 0.90) -> float:
+
+def sim_battery(
+    df: pd.DataFrame,
+    cap_kwh: float,
+    config: UserConfig,
+) -> tuple[float, float]:
     """
     Stateful DC-Batterie-Simulation auf 15-Min-Daten.
-    df muss Spalten 'import_kwh' und 'export_kwh' haben.
-    Gibt gespeicherte kWh zurück (= Ersparnis vs. Netzbezug).
+
+    Modelliert:
+    - Split-Effizienz (charge_eff * discharge_eff = round-trip)
+    - Standby-Verbrauch (Dauerlast aus SOC oder Netz)
+    - Mindest-Threshold (Laden/Entladen nur über min_power_watts)
+
+    Returns: (saved_kwh, standby_loss_kwh)
     """
+    charge_eff = config.charge_eff
+    discharge_eff = config.discharge_eff
+    standby_kwh_per_slot = config.standby_watts / 1000 * SLOT_HOURS
+    min_kwh_per_slot = config.min_power_watts / 1000 * SLOT_HOURS
+
     soc = 0.0
     saved = 0.0
+    standby_from_grid = 0.0
+
     import_arr = df['import_kwh'].to_numpy()
     export_arr = df['export_kwh'].to_numpy()
+
     for i in range(len(import_arr)):
-        # Laden: Solar-Überschuss in Batterie
-        charge_possible = min(export_arr[i], (cap_kwh - soc) / eff)
-        soc = min(cap_kwh, soc + charge_possible * eff)
-        # Entladen: Batterie deckt Netzbezug
-        discharge = min(soc, import_arr[i])
-        soc -= discharge
-        saved += discharge
-    return saved
+        # 1. Standby-Verbrauch: aus SOC wenn möglich, sonst Netz
+        if soc >= standby_kwh_per_slot:
+            soc -= standby_kwh_per_slot
+        else:
+            standby_from_grid += standby_kwh_per_slot - soc
+            soc = 0.0
+
+        # 2. Laden: Solar-Überschuss → Batterie (nur über Threshold)
+        avail_export = export_arr[i]
+        if avail_export >= min_kwh_per_slot:
+            headroom = (cap_kwh - soc) / charge_eff
+            charge_energy = min(avail_export, headroom)
+            soc = min(cap_kwh, soc + charge_energy * charge_eff)
+
+        # 3. Entladen: Batterie → Haus (nur über Threshold)
+        demand = import_arr[i]
+        if demand >= min_kwh_per_slot and soc > 0:
+            max_discharge = soc * discharge_eff
+            discharge = min(max_discharge, demand)
+            soc -= discharge / discharge_eff
+            saved += discharge
+
+    return saved, standby_from_grid
 
 
 def compute_tagesgang(df: pd.DataFrame) -> tuple[dict, dict]:
-    """
-    Jahresdurchschnittlicher Tagesgang in Watt (je Stunde 0–23).
-    Gibt (import_w, export_w) zurück als dict {hour: watts}.
-    """
+    """Jahresdurchschnittlicher Tagesgang in Watt (je Stunde 0-23)."""
     hi = df.groupby(df.index.hour)['import_kwh'].mean() * 4000
     he = df.groupby(df.index.hour)['export_kwh'].mean() * 4000
     import_w = {h: float(hi.get(h, 0)) for h in range(24)}
@@ -45,11 +80,7 @@ def compute_tagesgang(df: pd.DataFrame) -> tuple[dict, dict]:
 
 
 def compute_night_profile(df: pd.DataFrame) -> tuple[float, float, dict]:
-    """
-    Nacht vs. Tag Segmentierung + stündliches Nacht-Lastprofil.
-    Nacht = alle Slots ohne Solareinspeisung (export_kwh == 0).
-    Gibt (night_kwh_total, day_kwh_total, night_profile_dict) zurück.
-    """
+    """Nacht vs. Tag Segmentierung + stündliches Nacht-Lastprofil."""
     night_mask = df['export_kwh'] == 0
     night_imp = float(df[night_mask]['import_kwh'].sum())
     day_imp = float(df[~night_mask]['import_kwh'].sum())
@@ -61,7 +92,7 @@ def compute_night_profile(df: pd.DataFrame) -> tuple[float, float, dict]:
 
 
 def compute_monthly(df: pd.DataFrame) -> list:
-    """Monatliche Detailanalyse. Gibt list[MonthStats] zurück."""
+    """Monatliche Detailanalyse."""
     months = []
     for m in range(1, 13):
         mdf = df[df.index.month == m]
@@ -85,15 +116,12 @@ def compute_monthly(df: pd.DataFrame) -> list:
 
 
 def run_full_simulation(df: pd.DataFrame, config: UserConfig) -> AnalysisResult:
-    """
-    Vollständige Simulation auf dem gemergten DataFrame.
-    df: DatetimeIndex, Spalten 'import_kwh' + 'export_kwh'.
-    """
+    """Vollständige Simulation auf dem gemergten DataFrame."""
     total_import = float(df['import_kwh'].sum())
     total_export = float(df['export_kwh'].sum())
 
     if df.empty or total_import + total_export == 0:
-        raise ValueError('Keine gültigen Daten für die Simulation.')
+        raise ValueError('Keine gueltigen Daten fuer die Simulation.')
 
     date_range = (df.index.min().date(), df.index.max().date())
 
@@ -103,8 +131,8 @@ def run_full_simulation(df: pd.DataFrame, config: UserConfig) -> AnalysisResult:
 
     battery_results = []
     for cap in config.active_sizes:
-        saved = sim_battery(df, cap, config.efficiency)
-        result = compute_economics(saved, total_import, cap, config)
+        saved, standby_loss = sim_battery(df, cap, config)
+        result = compute_economics(saved, standby_loss, total_import, cap, config)
         battery_results.append(result)
 
     recommendation = recommend_battery(battery_results, config)

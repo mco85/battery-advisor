@@ -49,6 +49,8 @@ def render_results_page():
                 'battery_sizes': config.battery_sizes,
                 'invest_costs': config.invest_costs,
                 'efficiency': config.efficiency,
+                'standby_watts': config.standby_watts,
+                'min_power_watts': config.min_power_watts,
             }
             result = _cached_simulation(df.to_csv(), config_dict)
             if st.session_state.get('is_estimated'):
@@ -101,10 +103,11 @@ def render_results_page():
     for br in result.battery_results:
         sim_data.append({
             'Kapazität': f'{br.capacity:.0f} kWh',
-            'Gespart/Jahr': f'{br.saved_kwh:.0f} kWh',
+            'Netto gespart': f'{br.saved_kwh:.0f} kWh',
+            'Standby-Verlust': f'-{br.standby_loss_kwh:.0f} kWh',
             'Reduktion': f'{br.reduction_pct:.1f}%',
-            'Einsparung': f'CHF {br.chf_per_year:.0f}',
-            'Invest netto': f'CHF {br.invest_chf:.0f}',
+            'CHF/Jahr': f'CHF {br.chf_per_year:.0f}',
+            'Invest': f'CHF {br.invest_chf:.0f}',
             'Amortisation': _amort_badge(br.amort_years),
         })
 

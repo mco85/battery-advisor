@@ -2,8 +2,12 @@
 Datenmodell und Wirtschaftlichkeitsrechnung.
 """
 from __future__ import annotations
+import math
 from dataclasses import dataclass, field
 from typing import Optional
+
+BATTERY_GUARANTEE_YEARS = 10.0
+DEGRADATION_RATE = 0.02  # 2%/Jahr Kapazitätsverlust (LFP typisch)
 
 
 @dataclass
@@ -15,6 +19,18 @@ class UserConfig:
         5.0: 4550, 7.5: 5600, 10.0: 6650, 15.0: 9100
     })
     efficiency: float = 0.90
+    standby_watts: float = 20.0      # Standby-Verbrauch Inverter/BMS in W
+    min_power_watts: float = 100.0   # Mindestleistung für Lade-/Entladestart
+
+    @property
+    def charge_eff(self) -> float:
+        """Lade-Effizienz (Wurzel aus Round-Trip)."""
+        return self.efficiency ** 0.5
+
+    @property
+    def discharge_eff(self) -> float:
+        """Entlade-Effizienz (Wurzel aus Round-Trip)."""
+        return self.efficiency ** 0.5
 
     @property
     def net_benefit(self) -> float:
@@ -44,12 +60,13 @@ class MonthStats:
 @dataclass
 class BatteryResult:
     capacity: float        # kWh
-    saved_kwh: float       # kWh/Jahr gespart
+    saved_kwh: float       # kWh/Jahr netto gespart (nach Standby-Abzug)
     rest_import: float     # kWh/Jahr verbleibender Netzbezug
     reduction_pct: float   # % Reduktion
-    chf_per_year: float    # CHF/Jahr Einsparung
+    chf_per_year: float    # CHF/Jahr Einsparung (Jahr 1, ohne Degradation)
     invest_chf: float      # CHF Investition (netto nach Steuer)
-    amort_years: float     # Amortisationszeit in Jahren
+    amort_years: float     # Amortisationszeit mit Degradation
+    standby_loss_kwh: float = 0.0  # kWh/Jahr Standby-Verlust
 
     @property
     def amort_color(self) -> str:
@@ -91,76 +108,91 @@ class AnalysisResult:
         return (self.total_import_kwh * self.config.grid_price
                 - self.total_export_kwh * self.config.feedin_price)
 
-    @property
-    def autonomy_pct(self) -> float:
-        """Autarkiequote: Anteil Eigenversorgung am Gesamtverbrauch.
-        Näherung: export/(import+export) = Anteil Solar am Energiemix."""
-        total = self.total_import_kwh + self.total_export_kwh
-        if total == 0:
-            return 0.0
-        return self.total_export_kwh / total * 100
+
+def compute_amort_with_degradation(
+    invest_chf: float,
+    chf_year1: float,
+    degradation_rate: float = DEGRADATION_RATE,
+    max_years: int = 40,
+) -> float:
+    """Amortisation unter Berücksichtigung von Degradation.
+    Jährliche Einsparung sinkt um degradation_rate pro Jahr."""
+    if chf_year1 <= 0:
+        return float('inf')
+    cumulative = 0.0
+    for year in range(1, max_years + 1):
+        annual = chf_year1 * (1 - degradation_rate) ** (year - 1)
+        cumulative += annual
+        if cumulative >= invest_chf:
+            # Lineare Interpolation im letzten Jahr
+            prev = cumulative - annual
+            frac = (invest_chf - prev) / annual
+            return year - 1 + frac
+    return float('inf')
 
 
 def compute_economics(
     saved_kwh: float,
+    standby_loss_kwh: float,
     total_import: float,
     capacity: float,
     config: UserConfig
 ) -> BatteryResult:
     invest = config.invest_costs.get(capacity, capacity * 910)
+    net_saved = saved_kwh - standby_loss_kwh
     net_benefit = config.net_benefit
-    chf = saved_kwh * net_benefit
-    amort = invest / chf if chf > 0 else float('inf')
+    chf = net_saved * net_benefit
+    amort = compute_amort_with_degradation(invest, chf)
     return BatteryResult(
         capacity=capacity,
-        saved_kwh=saved_kwh,
-        rest_import=total_import - saved_kwh,
-        reduction_pct=saved_kwh / total_import * 100 if total_import > 0 else 0,
+        saved_kwh=net_saved,
+        rest_import=total_import - net_saved,
+        reduction_pct=net_saved / total_import * 100 if total_import > 0 else 0,
         chf_per_year=chf,
         invest_chf=invest,
         amort_years=amort,
+        standby_loss_kwh=standby_loss_kwh,
     )
 
 
 def recommend_battery(
     battery_results: list,
     config: UserConfig,
-    guarantee_years: float = 10.0
+    guarantee_years: float = BATTERY_GUARANTEE_YEARS,
 ) -> BatteryRecommendation:
     """Empfiehlt die beste Batteriegrösse basierend auf Wirtschaftlichkeit."""
     if not battery_results:
         return BatteryRecommendation(
             best_size=None,
-            reason='Keine Batteriegrößen konfiguriert.',
+            reason='Keine Batteriegroessen konfiguriert.',
             verdict='not_worthwhile',
             amort_years=None,
             chf_per_year=None,
             breakeven_price=0.0,
         )
 
-    # Sortiere nach bestem Preis-Leistungs-Verhältnis (niedrigste Amort.)
     sorted_results = sorted(battery_results, key=lambda r: r.amort_years)
     best = sorted_results[0]
 
-    # Breakeven-Preis: bei welchem Bezugspreis amortisiert best in guarantee_years?
-    # invest = years * saved_kwh * (breakeven - feedin)
-    # breakeven = invest/(years*saved_kwh) + feedin
-    if best.saved_kwh > 0:
-        breakeven = best.invest_chf / (guarantee_years * best.saved_kwh) + config.feedin_price
+    # Breakeven-Preis mit Degradation:
+    # Durchschnittliche kWh über Garantiezeit = saved * avg_degradation_factor
+    avg_factor = sum((1 - DEGRADATION_RATE) ** y for y in range(int(guarantee_years))) / guarantee_years
+    avg_saved = best.saved_kwh * avg_factor
+    if avg_saved > 0:
+        breakeven = best.invest_chf / (guarantee_years * avg_saved) + config.feedin_price
     else:
-        breakeven = 9.99  # kein Solar-Überschuss = nie rentabel
+        breakeven = 9.99
 
-    import math
     breakeven_str = f'{breakeven*100:.1f} Rp./kWh' if not math.isinf(breakeven) else 'unbegrenzt'
 
     if best.amort_years <= guarantee_years:
         verdict = 'buy'
         reason = (f'{best.capacity:.0f} kWh amortisiert sich in {best.amort_years:.1f} Jahren '
-                  f'-- innerhalb der {guarantee_years:.0f} Jahre Garantie.')
+                  f'-- innerhalb der {guarantee_years:.0f}-Jahre-Garantie.')
     elif best.amort_years <= guarantee_years * 1.5:
         verdict = 'wait'
         reason = (f'{best.capacity:.0f} kWh amortisiert sich in {best.amort_years:.1f} Jahren '
-                  f'-- knapp ausserhalb der {guarantee_years:.0f} Jahre Garantie. '
+                  f'-- knapp ausserhalb der {guarantee_years:.0f}-Jahre-Garantie. '
                   f'Rentabel ab ~{breakeven_str}.')
     else:
         verdict = 'not_worthwhile'

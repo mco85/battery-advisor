@@ -85,8 +85,22 @@ def render_config_page():
         efficiency = st.slider(
             'Batterie-Wirkungsgrad (Round-Trip %)',
             min_value=80, max_value=98, value=90, step=1,
-            help='Typisch: DC-Batterie 88–95%, AC-Batterie 80–90%.',
+            help='Typisch: DC-Batterie 88-95%, AC-Batterie 80-90%. '
+                 'Verlust wird je 50/50 auf Laden und Entladen aufgeteilt.',
         )
+        col_adv1, col_adv2 = st.columns(2)
+        with col_adv1:
+            standby_w = st.number_input(
+                'Standby-Verbrauch Inverter/BMS (W)',
+                value=20, min_value=0, max_value=200, step=5,
+                help='Dauerlast des Batterie-Systems. Fronius: <10W, typisch: 20-50W, Tesla PW: 100-150W.',
+            )
+        with col_adv2:
+            min_power_w = st.number_input(
+                'Mindestleistung Lade-/Entladestart (W)',
+                value=100, min_value=0, max_value=500, step=25,
+                help='Unter diesem Threshold aktiviert der Inverter nicht. DC: 50-150W, AC: 150-250W.',
+            )
 
     # ── Config zusammenstellen ──────────────────────────────────────────────
     active_rows = battery_df[battery_df['Aktiv'] == True]
@@ -100,6 +114,8 @@ def render_config_page():
         battery_sizes=sizes,
         invest_costs=costs,
         efficiency=efficiency / 100,
+        standby_watts=float(standby_w),
+        min_power_watts=float(min_power_w),
     )
 
     # ── Navigation ──────────────────────────────────────────────────────────

@@ -3,9 +3,6 @@ Schritt 2: Preise & Batteriekonfiguration.
 """
 import streamlit as st
 import pandas as pd
-from pathlib import Path
-import sys
-sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from core.economics import UserConfig
 

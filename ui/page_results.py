@@ -3,12 +3,9 @@ Schritt 3: Ergebnisse — Charts, Tabellen, PDF-Download.
 """
 import streamlit as st
 import pandas as pd
-from pathlib import Path
-import sys
-sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from core.simulation import run_full_simulation
-from charts.tagesgang import tagesgang_chart, night_profile_chart
+from charts.tagesgang import tagesgang_chart
 from charts.monthly import monthly_chart
 from charts.battery_comparison import battery_comparison_chart
 
@@ -23,10 +20,12 @@ def _amort_badge(years: float) -> str:
 
 
 @st.cache_data(show_spinner=False)
-def _run_simulation(df_hash, config_hash):
-    """Cache-Wrapper: Simulation nur bei neuen Daten/Config."""
-    df = st.session_state['df']
-    config = st.session_state['config']
+def _cached_simulation(_df_csv: str, config_dict: dict):
+    """Cached simulation. _df_csv prefix underscore = unhashable-safe for st.cache_data."""
+    import io
+    df = pd.read_csv(io.StringIO(_df_csv), index_col=0, parse_dates=True)
+    from core.economics import UserConfig
+    config = UserConfig(**config_dict)
     return run_full_simulation(df, config)
 
 
@@ -41,13 +40,17 @@ def render_results_page():
             st.rerun()
         return
 
-    # Simulieren (mit Cache)
-    df_hash = hash(df.to_csv())
-    config_hash = hash(str(config))
-
+    # Simulation mit Cache (serialisiert df + config für stabilen Cache-Key)
     with st.spinner('Simulation läuft...'):
         try:
-            result = run_full_simulation(df, config)
+            config_dict = {
+                'grid_price': config.grid_price,
+                'feedin_price': config.feedin_price,
+                'battery_sizes': config.battery_sizes,
+                'invest_costs': config.invest_costs,
+                'efficiency': config.efficiency,
+            }
+            result = _cached_simulation(df.to_csv(), config_dict)
             if st.session_state.get('is_estimated'):
                 result.is_estimated = True
         except ValueError as e:
@@ -105,9 +108,9 @@ def render_results_page():
             'Amortisation': _amort_badge(br.amort_years),
         })
 
+    fig_bat = None  # Init before conditional block to avoid NameError
     if sim_data:
         sim_df = pd.DataFrame(sim_data)
-        # Beste Zeile hervorheben
         best_idx = next(
             (i for i, r in enumerate(result.battery_results)
              if r.capacity == rec.best_size), None
@@ -166,7 +169,7 @@ def render_results_page():
                     chart_figs = {
                         'tagesgang': fig_tg,
                         'monthly': fig_mon,
-                        'battery': fig_bat if result.battery_results else None,
+                        'battery': fig_bat,
                     }
                     pdf_bytes = generate_report(result, chart_figs)
                     st.download_button(
@@ -180,7 +183,7 @@ def render_results_page():
 
     with col_new:
         if st.button('Neue Analyse starten', use_container_width=True):
-            for key in ['df', 'config', 'data_source', 'is_estimated', 'validation_report', 'result']:
+            for key in ['df', 'config', 'data_source', 'is_estimated']:
                 st.session_state.pop(key, None)
             st.session_state['step'] = 1
             st.rerun()

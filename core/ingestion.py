@@ -127,13 +127,13 @@ def validate_and_merge(
             'Erwartet: 15 Min, 30 Min oder 60 Min.'
         )
 
-    # Auf 15-Min-Raster resampling falls nötig
+    # Auf 15-Min-Raster resampling falls nötig: Energie gleichmässig aufteilen
     if most_common_min == 60:
-        warnings.append('Stündliche Daten erkannt — werden auf 15-Min interpoliert (÷4).')
-        df = df.resample('15min').interpolate(method='linear') / (60 / most_common_min)
+        warnings.append('Stündliche Daten erkannt — werden auf 15-Min aufgeteilt (÷4).')
+        df = df.resample('15min').ffill() / 4
     elif most_common_min == 30:
-        warnings.append('30-Min-Daten erkannt — werden auf 15-Min interpoliert (÷2).')
-        df = df.resample('15min').interpolate(method='linear') / (30 / 15)
+        warnings.append('30-Min-Daten erkannt — werden auf 15-Min aufgeteilt (÷2).')
+        df = df.resample('15min').ffill() / 2
 
     # Vollständiges 15-Min-Raster erwarten
     expected_index = pd.date_range(

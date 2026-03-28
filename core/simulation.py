@@ -72,7 +72,7 @@ def compute_monthly(df: pd.DataFrame) -> list:
                 night_per_day=0, day_per_day=0, peak_kw=0
             ))
             continue
-        days = mdf.index.normalize().nunique()
+        days = max(mdf.index.normalize().nunique(), 1)
         months.append(MonthStats(
             month=m,
             import_per_day=float(mdf['import_kwh'].sum() / days),

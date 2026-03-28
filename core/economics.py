@@ -93,18 +93,12 @@ class AnalysisResult:
 
     @property
     def autonomy_pct(self) -> float:
-        """Anteil Eigenversorgung."""
-        total_consumption = self.total_import_kwh + (
-            self.total_export_kwh - self.total_import_kwh
-            if self.total_export_kwh > self.total_import_kwh else 0
-        )
-        # Einfache Näherung: 1 - import/consumption
-        # Consumption = import + (export eigentlich = solar - direkt)
-        # Besser: aus import/export direkt
-        if self.total_import_kwh + self.total_export_kwh == 0:
+        """Autarkiequote: Anteil Eigenversorgung am Gesamtverbrauch.
+        Näherung: export/(import+export) = Anteil Solar am Energiemix."""
+        total = self.total_import_kwh + self.total_export_kwh
+        if total == 0:
             return 0.0
-        return max(0.0, 1.0 - self.total_import_kwh /
-                   (self.total_import_kwh + self.total_export_kwh) * 2) * 100
+        return self.total_export_kwh / total * 100
 
 
 def compute_economics(
@@ -154,21 +148,24 @@ def recommend_battery(
     if best.saved_kwh > 0:
         breakeven = best.invest_chf / (guarantee_years * best.saved_kwh) + config.feedin_price
     else:
-        breakeven = float('inf')
+        breakeven = 9.99  # kein Solar-Überschuss = nie rentabel
+
+    import math
+    breakeven_str = f'{breakeven*100:.1f} Rp./kWh' if not math.isinf(breakeven) else 'unbegrenzt'
 
     if best.amort_years <= guarantee_years:
         verdict = 'buy'
         reason = (f'{best.capacity:.0f} kWh amortisiert sich in {best.amort_years:.1f} Jahren '
-                  f'— innerhalb der {guarantee_years:.0f} Jahre Garantie.')
+                  f'-- innerhalb der {guarantee_years:.0f} Jahre Garantie.')
     elif best.amort_years <= guarantee_years * 1.5:
         verdict = 'wait'
         reason = (f'{best.capacity:.0f} kWh amortisiert sich in {best.amort_years:.1f} Jahren '
-                  f'— knapp ausserhalb der {guarantee_years:.0f} Jahre Garantie. '
-                  f'Rentabel ab ~{breakeven*100:.1f} Rp./kWh.')
+                  f'-- knapp ausserhalb der {guarantee_years:.0f} Jahre Garantie. '
+                  f'Rentabel ab ~{breakeven_str}.')
     else:
         verdict = 'not_worthwhile'
-        reason = (f'Keine Batteriegrösse amortisiert sich innerhalb der Garantiezeit. '
-                  f'Rentabel ab ~{breakeven*100:.1f} Rp./kWh (heute: {config.grid_price*100:.1f} Rp.).')
+        reason = (f'Keine Batterie amortisiert sich innerhalb der Garantiezeit. '
+                  f'Rentabel ab ~{breakeven_str} (heute: {config.grid_price*100:.1f} Rp.).')
 
     return BatteryRecommendation(
         best_size=best.capacity,

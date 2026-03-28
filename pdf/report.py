@@ -4,7 +4,6 @@ Adaptiert aus generate_battery_pdf.py — nutzt DejaVu Sans (cross-platform).
 """
 from __future__ import annotations
 import io
-import os
 from pathlib import Path
 from fpdf import FPDF
 from fpdf.enums import XPos, YPos
@@ -233,7 +232,7 @@ def generate_report(result, chart_figs: dict | None = None) -> bytes:
     )
 
     # ── Batteriesimulation ────────────────────────────────────────────────────
-    pdf.h2('Batterie-Simulation (90% Wirkungsgrad)')
+    pdf.h2(f'Batterie-Simulation ({r.config.efficiency*100:.0f}% Wirkungsgrad)')
     rows = []
     for br in r.battery_results:
         amort_str = f'{br.amort_years:.1f} J' if br.amort_years < 99 else '>30 J'

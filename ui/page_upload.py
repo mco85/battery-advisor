@@ -4,8 +4,6 @@ Schritt 1: Dateneingabe — CSV-Upload, Monatswerte, Demo.
 import streamlit as st
 import pandas as pd
 from pathlib import Path
-import sys, os
-sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from core.ingestion import load_meter_csv, validate_and_merge
 from core.manual_estimate import monthly_totals_to_15min
@@ -67,19 +65,26 @@ def render_upload_page():
             )
 
         if f_import and f_export:
-            with st.spinner('Daten werden geladen und validiert...'):
-                try:
-                    df_imp = load_meter_csv(f_import, 'import_kwh')
-                    df_exp = load_meter_csv(f_export, 'export_kwh')
-                    df, report = validate_and_merge(df_imp, df_exp)
-                    _show_validation(report)
-                    if report.is_valid:
-                        st.session_state['df'] = df
-                        st.session_state['data_source'] = 'csv'
-                        st.session_state['is_estimated'] = False
-                        st.session_state['validation_report'] = report
-                except ValueError as e:
-                    st.error(str(e))
+            # Nur neu parsen wenn sich die Dateien geändert haben
+            import_id = (f_import.name, f_import.size)
+            export_id = (f_export.name, f_export.size)
+            prev_ids = st.session_state.get('_csv_ids')
+            if prev_ids != (import_id, export_id) or st.session_state.get('df') is None:
+                with st.spinner('Daten werden geladen und validiert...'):
+                    try:
+                        df_imp = load_meter_csv(f_import, 'import_kwh')
+                        df_exp = load_meter_csv(f_export, 'export_kwh')
+                        df, report = validate_and_merge(df_imp, df_exp)
+                        _show_validation(report)
+                        if report.is_valid:
+                            st.session_state['df'] = df
+                            st.session_state['data_source'] = 'csv'
+                            st.session_state['is_estimated'] = False
+                            st.session_state['_csv_ids'] = (import_id, export_id)
+                    except ValueError as e:
+                        st.error(str(e))
+            else:
+                st.success('Zählerdaten bereits geladen.')
         elif f_import or f_export:
             st.info('Bitte beide Dateien hochladen (Netzbezug + Einspeisung).')
 

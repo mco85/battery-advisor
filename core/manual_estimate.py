@@ -92,16 +92,32 @@ def monthly_totals_to_15min(
             # Tages-Variation
             imp_noise = rng.uniform(1 - noise_level, 1 + noise_level)
             exp_noise = rng.uniform(1 - noise_level, 1 + noise_level)
+            imp_target = imp_per_day * imp_noise
+            exp_target = exp_per_day * exp_noise
 
-            # Import-Profil (Lastprofil, auf 96 Slots interpoliert)
+            # Roh-Profile (Last bzw. Solar-Glocke), Form unnormalisiert
             load_96 = np.repeat(_LOAD_PROFILE_HOURLY, 4)  # 24h × 4 = 96 Slots
-            imp_day = imp_per_day * imp_noise * load_96[:n_slots]
-            imp_day = imp_day / imp_day.sum() * imp_per_day * imp_noise if imp_day.sum() > 0 else imp_day
+            imp_day = load_96[:n_slots].astype(float).copy()
+            exp_day = solar_profile[:n_slots].astype(float).copy()
 
-            # Export-Profil (Solar-Glockenkurve)
-            exp_day = exp_per_day * exp_noise * solar_profile[:n_slots]
+            # Auf Tagesziel skalieren, damit Netting wohldefiniert ist
+            if imp_day.sum() > 0:
+                imp_day *= imp_target / imp_day.sum()
             if exp_day.sum() > 0:
-                exp_day = exp_day / exp_day.sum() * exp_per_day * exp_noise
+                exp_day *= exp_target / exp_day.sum()
+
+            # Mutuelle Exklusivität pro Slot (Smart-Meter netto):
+            # gleichzeitiger Import + Export im selben 15-Min-Slot ist physikalisch
+            # die Saldierung der Hauseigenverwendung. Netto: nur eines kann > 0 sein.
+            overlap = np.minimum(imp_day, exp_day)
+            imp_day -= overlap
+            exp_day -= overlap
+
+            # Tagesziele wiederherstellen (Netting verschiebt Energie von Mittag in Abend/Nacht)
+            if imp_day.sum() > 0:
+                imp_day *= imp_target / imp_day.sum()
+            if exp_day.sum() > 0:
+                exp_day *= exp_target / exp_day.sum()
 
             df.loc[day_mask, 'import_kwh'] = np.maximum(0, imp_day)
             df.loc[day_mask, 'export_kwh'] = np.maximum(0, exp_day)

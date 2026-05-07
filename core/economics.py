@@ -60,13 +60,15 @@ class MonthStats:
 @dataclass
 class BatteryResult:
     capacity: float        # kWh
-    saved_kwh: float       # kWh/Jahr netto gespart (nach Standby-Abzug)
+    saved_kwh: float       # kWh/Jahr Netto-Reduktion Netzbezug (= Entladung an Last - Standby aus Netz)
     rest_import: float     # kWh/Jahr verbleibender Netzbezug
     reduction_pct: float   # % Reduktion
     chf_per_year: float    # CHF/Jahr Einsparung (Jahr 1, ohne Degradation)
     invest_chf: float      # CHF Investition (netto nach Steuer)
     amort_years: float     # Amortisationszeit mit Degradation
-    standby_loss_kwh: float = 0.0  # kWh/Jahr Standby-Verlust
+    standby_loss_kwh: float = 0.0  # kWh/Jahr Standby aus Netz
+    charged_kwh: float = 0.0       # kWh/Jahr aus Export in Batterie (entgangene Einspeisung)
+    lifetime_profit: float = 0.0   # CHF Gesamtgewinn über Garantiezeit (chf−invest, mit Degradation)
 
     @property
     def amort_color(self) -> str:
@@ -131,18 +133,45 @@ def compute_amort_with_degradation(
     return float('inf')
 
 
+def compute_lifetime_profit(
+    invest_chf: float,
+    chf_year1: float,
+    horizon_years: float = BATTERY_GUARANTEE_YEARS,
+    degradation_rate: float = DEGRADATION_RATE,
+) -> float:
+    """Gesamtgewinn über Horizont (Σ degradierte Jahresersparnis − Invest).
+    Negativ wenn Invest nicht erreicht wird."""
+    cumulative = 0.0
+    for y in range(int(horizon_years)):
+        cumulative += chf_year1 * (1 - degradation_rate) ** y
+    return cumulative - invest_chf
+
+
 def compute_economics(
     saved_kwh: float,
     standby_loss_kwh: float,
+    charged_kwh: float,
     total_import: float,
     capacity: float,
     config: UserConfig
 ) -> BatteryResult:
+    """
+    Wirtschaftlichkeitsrechnung mit korrekter Energiebilanz:
+
+      Δ_savings = saved * grid - charged * feedin - standby_grid * grid
+
+    saved             = AC-Entladung an Last (vermiedener Netzbezug)
+    standby_loss_kwh  = Standby aus Netz (zusätzlicher Netzbezug)
+    charged_kwh       = AC aus Export in Batterie (entgangene Einspeisung,
+                        beinhaltet Round-Trip- und Standby-aus-SOC-Verluste)
+    """
     invest = config.invest_costs.get(capacity, capacity * 910)
     net_saved = saved_kwh - standby_loss_kwh
-    net_benefit = config.net_benefit
-    chf = net_saved * net_benefit
+    chf = (saved_kwh * config.grid_price
+           - charged_kwh * config.feedin_price
+           - standby_loss_kwh * config.grid_price)
     amort = compute_amort_with_degradation(invest, chf)
+    profit = compute_lifetime_profit(invest, chf)
     return BatteryResult(
         capacity=capacity,
         saved_kwh=net_saved,
@@ -152,6 +181,8 @@ def compute_economics(
         invest_chf=invest,
         amort_years=amort,
         standby_loss_kwh=standby_loss_kwh,
+        charged_kwh=charged_kwh,
+        lifetime_profit=profit,
     )
 
 
@@ -171,15 +202,31 @@ def recommend_battery(
             breakeven_price=0.0,
         )
 
-    sorted_results = sorted(battery_results, key=lambda r: r.amort_years)
-    best = sorted_results[0]
+    # Selektion: max Lebensdauer-Gewinn innerhalb des sichersten Risiko-Tiers.
+    # Tier-Logik: Amort innerhalb Garantie ist sicherer (Hersteller garantiert
+    # Funktion). Wenn keine Variante das schafft, weiche auf 1.5×Garantie aus.
+    # Innerhalb des Tiers wählt höchster Lebensdauer-Gewinn — eine grössere
+    # Batterie mit längerer Amort kann mehr CHF einbringen als eine schnell
+    # amortisierte kleine.
+    buy_tier = [r for r in battery_results if r.amort_years <= guarantee_years]
+    wait_tier = [r for r in battery_results if r.amort_years <= guarantee_years * 1.5]
+    if buy_tier:
+        best = max(buy_tier, key=lambda r: r.lifetime_profit)
+    elif wait_tier:
+        best = max(wait_tier, key=lambda r: r.lifetime_profit)
+    else:
+        best = min(battery_results, key=lambda r: r.amort_years)
 
-    # Breakeven-Preis mit Degradation:
-    # Durchschnittliche kWh über Garantiezeit = saved * avg_degradation_factor
+    # Breakeven-Bezugspreis: bei dem die Investition sich über guarantee_years
+    # amortisiert (mit Degradation, ohne Diskontierung).
+    #
+    #   year1_chf = grid * net_saved - feedin * charged
+    #   total_chf = year1_chf * Σ_{y=0..N-1} (1-d)^y
+    #   invest    = total_chf  ⇒  grid = (invest/(N·avg_factor) + feedin·charged) / net_saved
     avg_factor = sum((1 - DEGRADATION_RATE) ** y for y in range(int(guarantee_years))) / guarantee_years
-    avg_saved = best.saved_kwh * avg_factor
-    if avg_saved > 0:
-        breakeven = best.invest_chf / (guarantee_years * avg_saved) + config.feedin_price
+    horizon = guarantee_years * avg_factor  # effektive Jahre nach Degradation
+    if best.saved_kwh > 0 and horizon > 0:
+        breakeven = (best.invest_chf / horizon + best.charged_kwh * config.feedin_price) / best.saved_kwh
     else:
         breakeven = 9.99
 
@@ -188,11 +235,13 @@ def recommend_battery(
     if best.amort_years <= guarantee_years:
         verdict = 'buy'
         reason = (f'{best.capacity:.0f} kWh amortisiert sich in {best.amort_years:.1f} Jahren '
-                  f'-- innerhalb der {guarantee_years:.0f}-Jahre-Garantie.')
+                  f'-- innerhalb der {guarantee_years:.0f}-Jahre-Garantie. '
+                  f'Gewinn ueber {guarantee_years:.0f} Jahre: CHF {best.lifetime_profit:.0f}.')
     elif best.amort_years <= guarantee_years * 1.5:
         verdict = 'wait'
         reason = (f'{best.capacity:.0f} kWh amortisiert sich in {best.amort_years:.1f} Jahren '
-                  f'-- knapp ausserhalb der {guarantee_years:.0f}-Jahre-Garantie. '
+                  f'-- knapp ausserhalb der {guarantee_years:.0f}-Jahre-Garantie '
+                  f'(Verlust ueber Garantiezeit: CHF {best.lifetime_profit:.0f}). '
                   f'Rentabel ab ~{breakeven_str}.')
     else:
         verdict = 'not_worthwhile'

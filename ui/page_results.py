@@ -92,7 +92,7 @@ def render_results_page():
         st.metric('Netto-Stromkosten', f'CHF {net:.0f}/Jahr')
     with m4:
         net_benefit = config.net_benefit * 100
-        st.metric('Nettovorteil', f'{net_benefit:.1f} Rp./kWh')
+        st.metric('Tarifdifferenz', f'{net_benefit:.1f} Rp./kWh')
 
     st.divider()
 

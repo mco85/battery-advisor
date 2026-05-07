@@ -226,7 +226,7 @@ def generate_report(result, chart_figs: dict | None = None) -> bytes:
             ['Netto-Stromkosten', f'CHF {net_cost:.0f}/Jahr'],
             ['Bezugspreis', f'{r.config.grid_price*100:.1f} Rp./kWh'],
             ['Einspeiseverg\u00fctung', f'{r.config.feedin_price*100:.1f} Rp./kWh'],
-            ['**Nettovorteil Batterie**', f'**{r.config.net_benefit*100:.1f} Rp./kWh**'],
+            ['**Tarifdifferenz**', f'**{r.config.net_benefit*100:.1f} Rp./kWh**'],
         ],
         col_widths=[100, 70],
     )

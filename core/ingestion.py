@@ -127,13 +127,20 @@ def validate_and_merge(
             'Erwartet: 15 Min, 30 Min oder 60 Min.'
         )
 
-    # Auf 15-Min-Raster resampling falls nötig: Energie gleichmässig aufteilen
-    if most_common_min == 60:
-        warnings.append('Stündliche Daten erkannt — werden auf 15-Min aufgeteilt (÷4).')
-        df = df.resample('15min').ffill() / 4
-    elif most_common_min == 30:
-        warnings.append('30-Min-Daten erkannt — werden auf 15-Min aufgeteilt (÷2).')
-        df = df.resample('15min').ffill() / 2
+    # Auf 15-Min-Raster resampling falls nötig: Energie gleichmässig aufteilen.
+    # Wichtig: jeder Original-Timestamp markiert den Beginn einer Periode von
+    # `most_common_min`. Wir müssen den Index bis last_ts + (period - 15min)
+    # erweitern, damit ffill auch die letzten 1–3 Slots der Schluss-Periode
+    # befüllt — sonst geht die Energie der letzten Stunde/halben Stunde verloren.
+    if most_common_min in (30, 60):
+        n_split = most_common_min // 15
+        warning_unit = 'Stündliche' if most_common_min == 60 else '30-Min-'
+        warnings.append(
+            f'{warning_unit}Daten erkannt — werden auf 15-Min aufgeteilt (÷{n_split}).'
+        )
+        new_end = df.index[-1] + pd.Timedelta(minutes=most_common_min - 15)
+        new_index = pd.date_range(df.index[0], new_end, freq='15min')
+        df = df.reindex(new_index, method='ffill') / n_split
 
     # Vollständiges 15-Min-Raster erwarten
     expected_index = pd.date_range(

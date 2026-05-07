@@ -21,16 +21,19 @@ def sim_battery(
     df: pd.DataFrame,
     cap_kwh: float,
     config: UserConfig,
-) -> tuple[float, float]:
+) -> tuple[float, float, float]:
     """
-    Stateful DC-Batterie-Simulation auf 15-Min-Daten.
+    Stateful AC-gekoppelte Batterie-Simulation auf 15-Min-Daten.
 
     Modelliert:
     - Split-Effizienz (charge_eff * discharge_eff = round-trip)
     - Standby-Verbrauch (Dauerlast aus SOC oder Netz)
     - Mindest-Threshold (Laden/Entladen nur über min_power_watts)
 
-    Returns: (saved_kwh, standby_loss_kwh)
+    Returns: (saved_kwh, standby_loss_kwh, charged_from_export_kwh)
+        saved_kwh: AC-Energie aus Batterie an Last → vermiedener Netzbezug
+        standby_loss_kwh: Standby aus Netz (SOC leer) → zusätzlicher Netzbezug
+        charged_from_export_kwh: AC-Energie aus Export in Batterie → entgangene Einspeisung
     """
     charge_eff = config.charge_eff
     discharge_eff = config.discharge_eff
@@ -40,6 +43,7 @@ def sim_battery(
     soc = 0.0
     saved = 0.0
     standby_from_grid = 0.0
+    charged_from_export = 0.0
 
     import_arr = df['import_kwh'].to_numpy()
     export_arr = df['export_kwh'].to_numpy()
@@ -58,6 +62,7 @@ def sim_battery(
             headroom = (cap_kwh - soc) / charge_eff
             charge_energy = min(avail_export, headroom)
             soc = min(cap_kwh, soc + charge_energy * charge_eff)
+            charged_from_export += charge_energy
 
         # 3. Entladen: Batterie → Haus (nur über Threshold)
         demand = import_arr[i]
@@ -67,7 +72,7 @@ def sim_battery(
             soc -= discharge / discharge_eff
             saved += discharge
 
-    return saved, standby_from_grid
+    return saved, standby_from_grid, charged_from_export
 
 
 def compute_tagesgang(df: pd.DataFrame) -> tuple[dict, dict]:
@@ -131,8 +136,8 @@ def run_full_simulation(df: pd.DataFrame, config: UserConfig) -> AnalysisResult:
 
     battery_results = []
     for cap in config.active_sizes:
-        saved, standby_loss = sim_battery(df, cap, config)
-        result = compute_economics(saved, standby_loss, total_import, cap, config)
+        saved, standby_loss, charged = sim_battery(df, cap, config)
+        result = compute_economics(saved, standby_loss, charged, total_import, cap, config)
         battery_results.append(result)
 
     recommendation = recommend_battery(battery_results, config)
